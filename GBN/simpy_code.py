@@ -1,67 +1,88 @@
 import simpy
 
-TOTAL = 5
-WINDOW = 3
-
-def sender(env, channel, acks, stats):
+def sender(env, packets, acks, stats):
+    total = 5
+    window = 3
     base = 1
-    next_packet = 1
 
-    while base <= TOTAL:
-        # Send new packets while the window has space.
-        while next_packet < base + WINDOW and next_packet <= TOTAL:
-            print(f"{env.now}: Send packet {next_packet}")
+    while base <= total:
+        end = min(base + window - 1, total)
+
+        for p in range(base, end + 1):
+            yield env.timeout(0.1)
             stats["sent"] += 1
-            yield channel.put(next_packet)
-            next_packet += 1
+            packets.put(p)
+            print("Sending:", p)
 
-        yield env.timeout(1)
+        yield env.timeout(0.5)
 
-        received_acks = []
+        received = []
         while acks.items:
-            received_acks.append((yield acks.get()))
+            received.append(acks.items.pop(0))
 
-        if received_acks:
-            ack = max(received_acks)
-            print(f"{env.now}: Cumulative ACK {ack}")
-            if ack >= base:
-                base = ack + 1
-        else:
-            print(f"{env.now}: Timeout, retransmit outstanding packets")
-            next_packet = base
+        highest = max(received, default=base - 1)
 
-def receiver(env, channel, acks, stats):
+        if highest < end:
+            print("Retransmitting from:", highest + 1)
+
+            for p in range(highest + 1, end + 1):
+                yield env.timeout(0.1)
+                stats["sent"] += 1
+                packets.put(p)
+                print("Retransmitting:", p)
+
+            yield env.timeout(0.5)
+
+            received = []
+            while acks.items:
+                received.append(acks.items.pop(0))
+
+            highest = max(received, default=base - 1)
+
+        base = highest + 1
+
+def receiver(env, packets, acks, stats):
     expected = 1
-    dropped_packet_2 = False
+    lost = False
 
-    while expected <= TOTAL:
-        packet = yield channel.get()
+    while expected <= 5:
+        p = yield packets.get()
+        yield env.timeout(0.1)
 
-        if packet == 2 and not dropped_packet_2:
-            dropped_packet_2 = True
+        if p == 2 and not lost:
+            print("Packet 2 lost!")
             stats["lost"] += 1
-            print(f"{env.now}: Simulated loss of packet 2")
-            continue
+            lost = True
 
-        if packet == expected:
-            print(f"{env.now}: Receiver got packet {packet}")
-            stats["delivered"] += 1
+        elif p == expected:
+            print("Received:", p)
             expected += 1
+            stats["delivered"] += 1
+
         else:
-            print(f"{env.now}: Discard out-of-order packet {packet}")
+            print("Discarded:", p)
 
-        yield acks.put(expected - 1)
+        if not (p == 2 and lost and expected == 2):
+            acks.put(expected - 1)
 
-def run():
-    env = simpy.Environment()
-    channel = simpy.Store(env)
-    acks = simpy.Store(env)
-    stats = {"sent": 0, "lost": 0, "delivered": 0}
+env = simpy.Environment()
+packets = simpy.Store(env)
+acks = simpy.Store(env)
 
-    env.process(sender(env, channel, acks, stats))
-    env.process(receiver(env, channel, acks, stats))
-    env.run(until=20)
-    print("Stats:", stats)
+stats = {"sent": 0, "lost": 0, "delivered": 0}
+packet_size = 1000
 
-if __name__ == "__main__":
-    run()
+env.process(sender(env, packets, acks, stats))
+env.process(receiver(env, packets, acks, stats))
+env.run()
+
+time = env.now
+loss = stats["lost"] / stats["sent"] * 100
+throughput = stats["delivered"] * packet_size / time
+
+print("\nTotal transmissions:", stats["sent"])
+print("Packets lost:", stats["lost"])
+print("Packets delivered:", stats["delivered"])
+print("Packet loss:", round(loss, 2), "%")
+print("Time:", round(time, 2), "seconds")
+print("Throughput:", round(throughput, 2), "bits/sec")

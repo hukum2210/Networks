@@ -1,38 +1,35 @@
 import socket
-import json
-
-HOST = "0.0.0.0"
-PORT = 5005
-TOTAL = 5
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.bind((HOST, PORT))
-print("GBN receiver ready on port", PORT)
+s.bind(("127.0.0.1", 5005))
 
 expected = 1
-dropped_packet_2 = False
+lost = False
+lost_count = 0
+delivered = 0
 
-while expected <= TOTAL:
+while expected <= 5:
     data, addr = s.recvfrom(1024)
-    msg = json.loads(data.decode())
-    packet = msg["packet"]
+    p = int(data.decode())
+    print("Received:", p)
 
-    # Simulate losing packet 2 once.
-    if packet == 2 and not dropped_packet_2:
-        dropped_packet_2 = True
-        print("Simulated loss: packet", packet)
-        continue
-
-    if packet == expected:
-        print("Received packet:", packet)
+    if p == 2 and not lost:
+        print("Packet 2 lost!")
+        lost = True
+        lost_count += 1
+    elif p == expected:
+        print("Accepted:", p)
         expected += 1
+        delivered += 1
     else:
-        print("Discarded out-of-order packet:", packet)
+        print("Discarded:", p)
 
-    # GBN uses cumulative ACKs.
-    ack = expected - 1
-    s.sendto(json.dumps({"ack": ack}).encode(), addr)
-    print("Sent cumulative ACK:", ack)
+    s.sendto(str(expected - 1).encode(), addr)
 
-print("All packets received.")
+data, addr = s.recvfrom(1024)
+
+if data.decode() == "STATS":
+    result = f"{lost_count},{delivered}"
+    s.sendto(result.encode(), addr)
+
 s.close()

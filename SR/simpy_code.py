@@ -1,67 +1,78 @@
 import simpy
 
-TOTAL = 5
-WINDOW = 3
-
-def sender(env, channel, acks, stats):
-    acked = set()
+def sender(env, packets, acks, stats):
+    total = 5
+    window = 3
     base = 1
+    acked = set()
 
-    while base <= TOTAL:
-        end = min(base + WINDOW - 1, TOTAL)
+    while base <= total:
+        end = min(base + window - 1, total)
 
-        # Send only unacknowledged packets in the current window.
-        for packet in range(base, end + 1):
-            if packet not in acked:
-                print(f"{env.now}: Send packet {packet}")
+        for p in range(base, end + 1):
+            if p not in acked:
+                yield env.timeout(0.1)
+                packets.put(p)
                 stats["sent"] += 1
-                yield channel.put(packet)
+                print("Sending:", p)
 
-        yield env.timeout(1)
+        yield env.timeout(0.5)
 
         while acks.items:
-            ack = yield acks.get()
-            acked.add(ack)
-            print(f"{env.now}: Individual ACK {ack}")
+            acked.add(acks.items.pop(0))
+
+        for p in range(base, end + 1):
+            if p not in acked:
+                print("Retransmitting:", p)
+                yield env.timeout(0.1)
+                packets.put(p)
+                stats["sent"] += 1
+
+        yield env.timeout(0.5)
+
+        while acks.items:
+            acked.add(acks.items.pop(0))
 
         while base in acked:
             base += 1
 
-        if base <= TOTAL:
-            missing = [p for p in range(base, end + 1) if p not in acked]
-            if missing:
-                print(f"{env.now}: Timeout, resend only {missing}")
-
-def receiver(env, channel, acks, stats):
+def receiver(env, packets, acks, stats):
+    lost = False
     received = set()
-    dropped_packet_2 = False
 
-    while len(received) < TOTAL:
-        packet = yield channel.get()
+    while len(received) < 5:
+        p = yield packets.get()
+        yield env.timeout(0.1)
 
-        if packet == 2 and not dropped_packet_2:
-            dropped_packet_2 = True
+        if p == 2 and not lost:
+            print("Packet 2 lost!")
             stats["lost"] += 1
-            print(f"{env.now}: Simulated loss of packet 2")
+            lost = True
             continue
 
-        if packet not in received:
-            received.add(packet)
-            stats["delivered"] += 1
-            print(f"{env.now}: Receiver buffered packet {packet}")
+        received.add(p)
+        print("Received:", p)
+        acks.put(p)
 
-        yield acks.put(packet)
+        stats["delivered"] = len(received)
 
-def run():
-    env = simpy.Environment()
-    channel = simpy.Store(env)
-    acks = simpy.Store(env)
-    stats = {"sent": 0, "lost": 0, "delivered": 0}
+env = simpy.Environment()
+packets = simpy.Store(env)
+acks = simpy.Store(env)
 
-    env.process(sender(env, channel, acks, stats))
-    env.process(receiver(env, channel, acks, stats))
-    env.run(until=20)
-    print("Stats:", stats)
+stats = {"sent": 0, "lost": 0, "delivered": 0}
+packet_size = 1000
 
-if __name__ == "__main__":
-    run()
+env.process(sender(env, packets, acks, stats))
+env.process(receiver(env, packets, acks, stats))
+env.run()
+
+elapsed = env.now
+loss = stats["lost"] / stats["sent"] * 100
+throughput = stats["delivered"] * packet_size / elapsed
+
+print("\nTransmissions:", stats["sent"])
+print("Lost packets:", stats["lost"])
+print("Delivered packets:", stats["delivered"])
+print("Packet loss:", round(loss, 2), "%")
+print("Throughput:", round(throughput, 2), "bits/sec")

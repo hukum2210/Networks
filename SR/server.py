@@ -1,38 +1,39 @@
 import socket
-import json
-
-HOST = "0.0.0.0"
-PORT = 5006
-TOTAL = 5
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.bind((HOST, PORT))
-print("Selective Repeat receiver ready on port", PORT)
+s.bind(("127.0.0.1", 5006))
 
+total = 5
 received = set()
-dropped_packet_2 = False
-buffer = {}
+lost = False
+lost_count = 0
 
-while len(received) < TOTAL:
+while len(received) < total:
     data, addr = s.recvfrom(1024)
-    msg = json.loads(data.decode())
-    packet = msg["packet"]
+    msg = data.decode()
 
-    # Simulate losing packet 2 once.
-    if packet == 2 and not dropped_packet_2:
-        dropped_packet_2 = True
-        print("Simulated loss: packet", packet)
+    if msg == "STATS":
+        s.sendto(f"{lost_count},{len(received)}".encode(), addr)
         continue
 
-    if 1 <= packet <= TOTAL:
-        if packet not in received:
-            received.add(packet)
-            buffer[packet] = True
-            print("Buffered packet:", packet)
+    p = int(msg)
+    print("Received:", p)
 
-        # SR sends an individual ACK for each received packet.
-        s.sendto(json.dumps({"ack": packet}).encode(), addr)
-        print("Sent ACK:", packet)
+    if p == 2 and not lost:
+        print("Packet 2 lost!")
+        lost = True
+        lost_count += 1
+        continue
 
-print("Delivered in order:", list(range(1, TOTAL + 1)))
+    received.add(p)
+    s.sendto(str(p).encode(), addr)
+    print("ACK sent:", p)
+
+while True:
+    data, addr = s.recvfrom(1024)
+
+    if data.decode() == "STATS":
+        s.sendto(f"{lost_count},{len(received)}".encode(), addr)
+        break
+
 s.close()

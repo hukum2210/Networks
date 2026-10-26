@@ -1,44 +1,71 @@
 import socket
-import json
 import time
 
-HOST = "127.0.0.1"   # Replace with receiver computer's IP for Wi-Fi/LAN
-PORT = 5006
-TOTAL = 5
-WINDOW = 3
-TIMEOUT = 1.0
-
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.settimeout(0.2)
+s.settimeout(0.5)
 
-acked = set()
+server = ("127.0.0.1", 5006)
+total = 5
+window = 3
 base = 1
+acked = set()
+sent = 0
+packet_size = 1000
 
-while base <= TOTAL:
-    end = min(base + WINDOW - 1, TOTAL)
+start = time.time()
 
-    # Send only packets in this window that are not ACKed yet.
-    for packet in range(base, end + 1):
-        if packet not in acked:
-            s.sendto(json.dumps({"packet": packet}).encode(), (HOST, PORT))
-            print("Sent packet:", packet)
+while base <= total:
+    end = min(base + window - 1, total)
 
-    deadline = time.time() + TIMEOUT
-    while time.time() < deadline:
+    for p in range(base, end + 1):
+        if p not in acked:
+            s.sendto(str(p).encode(), server)
+            sent += 1
+            print("Sending:", p)
+
+    while True:
         try:
             data, _ = s.recvfrom(1024)
-            ack = json.loads(data.decode())["ack"]
-            acked.add(ack)
-            print("Received individual ACK:", ack)
-        except socket.timeout:
-            pass
+            acked.add(int(data.decode()))
 
-    # Slide base past all consecutively ACKed packets.
+            if all(p in acked for p in range(base, end + 1)):
+                break
+
+        except socket.timeout:
+            break
+
+    for p in range(base, end + 1):
+        if p not in acked:
+            print("Retransmitting:", p)
+            s.sendto(str(p).encode(), server)
+            sent += 1
+
+    while True:
+        try:
+            data, _ = s.recvfrom(1024)
+            acked.add(int(data.decode()))
+
+            if all(p in acked for p in range(base, end + 1)):
+                break
+
+        except socket.timeout:
+            break
+
     while base in acked:
         base += 1
 
-    if base <= TOTAL and any(p not in acked for p in range(base, end + 1)):
-        print("Timeout: retransmit only unACKed packets")
+s.sendto(b"STATS", server)
+data, _ = s.recvfrom(1024)
+lost, delivered = map(int, data.decode().split(","))
 
-print("Transmission complete.")
+elapsed = time.time() - start
+loss = lost / sent * 100
+throughput = delivered * packet_size / elapsed
+
+print("\nTransmissions:", sent)
+print("Packets lost:", lost)
+print("Packets delivered:", delivered)
+print("Packet loss:", round(loss, 2), "%")
+print("Throughput:", round(throughput, 2), "bits/sec")
+
 s.close()

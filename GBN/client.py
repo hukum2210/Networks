@@ -1,35 +1,63 @@
 import socket
-import json
-
-HOST = "127.0.0.1"   # Replace with receiver computer's IP for Wi-Fi/LAN
-PORT = 5005
-TOTAL = 5
-WINDOW = 3
-TIMEOUT = 1.0
+import time
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.settimeout(TIMEOUT)
+server = ("127.0.0.1", 5005)
 
+total = 5
+window = 3
 base = 1
-next_packet = 1
+sent = 0
+packet_size = 1000
 
-while base <= TOTAL:
-    # Send new packets while there is room in the window.
-    while next_packet < base + WINDOW and next_packet <= TOTAL:
-        s.sendto(json.dumps({"packet": next_packet}).encode(), (HOST, PORT))
-        print("Sent packet:", next_packet)
-        next_packet += 1
+start = time.time()
 
-    try:
+while base <= total:
+    end = min(base + window - 1, total)
+
+    for p in range(base, end + 1):
+        s.sendto(str(p).encode(), server)
+        sent += 1
+        print("Sending:", p)
+
+    acks = []
+    for _ in range(base, end + 1):
         data, _ = s.recvfrom(1024)
-        ack = json.loads(data.decode())["ack"]
-        print("Received cumulative ACK:", ack)
+        acks.append(int(data.decode()))
 
-        if ack >= base:
-            base = ack + 1
-    except socket.timeout:
-        print("Timeout: retransmitting outstanding packets")
-        next_packet = base
+    highest = max(acks)
 
-print("Transmission complete.")
+    if highest < end:
+        print("Retransmitting from:", highest + 1)
+
+        for p in range(highest + 1, end + 1):
+            s.sendto(str(p).encode(), server)
+            sent += 1
+            print("Retransmitting:", p)
+
+        acks = []
+        for _ in range(highest + 1, end + 1):
+            data, _ = s.recvfrom(1024)
+            acks.append(int(data.decode()))
+
+        highest = max(acks)
+
+    base = highest + 1
+
+s.sendto(b"STATS", server)
+data, _ = s.recvfrom(1024)
+
+lost, delivered = map(int, data.decode().split(","))
+elapsed = time.time() - start
+
+loss = lost / sent * 100
+throughput = delivered * packet_size / elapsed
+
+print("\nTotal transmissions:", sent)
+print("Packets lost:", lost)
+print("Packets delivered:", delivered)
+print("Packet loss:", round(loss, 2), "%")
+print("Time:", round(elapsed, 2), "seconds")
+print("Throughput:", round(throughput, 2), "bits/sec")
+
 s.close()
